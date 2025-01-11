@@ -1,0 +1,17 @@
+# Copyright (c) 2024 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: Smart toggle behavior
+
+compatible: "zmk,behavior-smart-toggle"
+
+include: zero_param.yaml
+
+properties:
+  bindings:
+    type: phandle-array
+    required: true
+  ignored-key-positions:
+    type: array
+    required: false
+    default: []
