@@ -53,6 +53,9 @@ so you can use it to go backwards in the window list using <kbd>Shift</kbd>+<kbd
 
 (This behavior is colloquially known as the ["swapper"](https://github.com/callum-oakley/qmk_firmware/tree/master/users/callum#swapper).)
 
+> [!IMPORTANT]
+> If you place this behavior on a combo, make sure to include the combo `key-positions` in `ignored-key-positions`.
+
 ## Installation
 
 See [ZMK modules documentation](https://zmk.dev/docs/features/modules#building-with-modules) for adding this module to your ZMK build.
