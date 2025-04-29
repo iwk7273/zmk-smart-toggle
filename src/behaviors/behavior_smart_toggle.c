@@ -155,7 +155,7 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
 
 static int smt_tog_layer_state_changed_listener(const zmk_event_t *eh) {
     struct zmk_layer_state_changed *ev = as_zmk_layer_state_changed(eh);
-    if (ev == NULL || !ev->state) {
+    if (ev == NULL || ev->state) { // ignore layer "on" events
         return ZMK_EV_EVENT_BUBBLE;
     }
     for (int i = 0; i < ZMK_BHV_MAX_ACTIVE_SMT_TOGS; i++) {
