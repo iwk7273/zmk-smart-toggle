@@ -96,14 +96,14 @@ static int on_smt_tog_binding_pressed(struct zmk_behavior_binding *binding,
     struct active_smt_tog *smt_tog = find_smt_tog(event.position);
     if (smt_tog == NULL) {
         if (new_smt_tog(&event, cfg, &smt_tog) == -ENOMEM) {
-            LOG_ERR("Unable to create new smt_tog. Insufficient space in "
+            LOG_ERR("Unable to create new smart toggle. Insufficient space in "
                     "active_smt_togs[].");
             return ZMK_BEHAVIOR_OPAQUE;
         }
-        LOG_DBG("%d created new smt_tog", event.position);
+        LOG_DBG("created new smart toggle at pos %d", event.position);
         zmk_behavior_invoke_binding(&cfg->tog_behavior, event, true);
     }
-    LOG_DBG("%d smt_tog pressed", event.position);
+    LOG_DBG("pressed smart toggle at pos %d", event.position);
     zmk_behavior_invoke_binding(&cfg->continue_behavior, event, true);
     return ZMK_BEHAVIOR_OPAQUE;
 }
@@ -112,7 +112,7 @@ static int on_smt_tog_binding_released(struct zmk_behavior_binding *binding,
                                        struct zmk_behavior_binding_event event) {
     const struct device *dev = zmk_behavior_get_binding(binding->behavior_dev);
     const struct behavior_smt_tog_config *cfg = dev->config;
-    LOG_DBG("%d smt_tog keybind released", event.position);
+    LOG_DBG("smart toggle keybind released at pos %d", event.position);
     zmk_behavior_invoke_binding(&cfg->continue_behavior, event, false);
     return ZMK_BEHAVIOR_OPAQUE;
 }
@@ -138,7 +138,7 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
         if (!smt_tog->is_active || is_position_ignored(smt_tog, ev->position)) {
             continue;
         }
-        LOG_DBG("smart toggle interrupted, ending at %d %d", smt_tog->position, ev->position);
+        LOG_DBG("smart toggle at pos %d interrupted by pos %d", smt_tog->position, ev->position);
         smt_tog->is_active = false;
         release_tog_behavior(smt_tog);
         return ZMK_EV_EVENT_BUBBLE;
@@ -156,7 +156,7 @@ static int smt_tog_layer_state_changed_listener(const zmk_event_t *eh) {
         if (!smt_tog->is_active || ev->layer != smt_tog->layer) {
             continue;
         }
-        LOG_DBG("smart toggle layer deactivated, ending at %d %d", smt_tog->position, ev->layer);
+        LOG_DBG("smart toggle at pos %d ending, layer %d deactivated", smt_tog->position, ev->layer);
         smt_tog->is_active = false;
         release_tog_behavior(smt_tog);
         return ZMK_EV_EVENT_BUBBLE;
