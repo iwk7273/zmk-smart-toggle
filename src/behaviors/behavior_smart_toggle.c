@@ -105,6 +105,13 @@ static int on_smt_tog_binding_pressed(struct zmk_behavior_binding *binding,
     }
     LOG_DBG("pressed smart toggle at pos %d", event.position);
     zmk_behavior_invoke_binding(&cfg->continue_behavior, event, true);
+
+    // edge case: layer deactivation and its position release event might have happened before this was called
+    if (!zmk_keymap_layer_active(smt_tog->layer)) {
+        LOG_DBG("deactivate smart toggle at pos %d because of missed events", event.position);
+        zmk_behavior_invoke_binding(&cfg->tog_behavior, event, false);
+    }
+
     return ZMK_BEHAVIOR_OPAQUE;
 }
 
