@@ -1,6 +1,7 @@
 #define DT_DRV_COMPAT zmk_behavior_smart_toggle
 
 #include <zephyr/device.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include <drivers/behavior.h>
@@ -30,6 +31,8 @@ struct active_smt_tog {
 #if IS_ENABLED(CONFIG_ZMK_SPLIT)
     uint8_t source;
 #endif
+    struct k_work release_work;
+    bool release_pending;
     const struct behavior_smt_tog_config *config;
 };
 
@@ -62,7 +65,7 @@ static int new_smt_tog(struct zmk_behavior_binding_event *event,
                        struct active_smt_tog **smt_tog) {
     for (int i = 0; i < ZMK_BHV_MAX_ACTIVE_SMT_TOGS; i++) {
         struct active_smt_tog *const ref_smt_tog = &active_smt_togs[i];
-        if (!ref_smt_tog->is_active) {
+        if (!ref_smt_tog->is_active && !ref_smt_tog->release_pending) {
             ref_smt_tog->position = event->position;
             ref_smt_tog->layer = event->layer;
 #if IS_ENABLED(CONFIG_ZMK_SPLIT)
@@ -70,11 +73,27 @@ static int new_smt_tog(struct zmk_behavior_binding_event *event,
 #endif
             ref_smt_tog->config = config;
             ref_smt_tog->is_active = true;
+            ref_smt_tog->release_pending = false;
             *smt_tog = ref_smt_tog;
             return 0;
         }
     }
     return -ENOMEM;
+}
+
+static void smt_tog_release_work_handler(struct k_work *work) {
+    struct active_smt_tog *smt_tog = CONTAINER_OF(work, struct active_smt_tog, release_work);
+    release_tog_behavior(smt_tog);
+    smt_tog->release_pending = false;
+}
+
+static void queue_smt_tog_release(struct active_smt_tog *smt_tog) {
+    smt_tog->is_active = false;
+    if (smt_tog->release_pending) {
+        return;
+    }
+    smt_tog->release_pending = true;
+    k_work_submit(&smt_tog->release_work);
 }
 
 static bool is_position_ignored(struct active_smt_tog *smt_tog, int32_t position) {
@@ -129,6 +148,8 @@ static int behavior_smt_tog_init(const struct device *dev) {
     if (init_first_run) {
         for (int i = 0; i < ZMK_BHV_MAX_ACTIVE_SMT_TOGS; i++) {
             active_smt_togs[i].is_active = false;
+            active_smt_togs[i].release_pending = false;
+            k_work_init(&active_smt_togs[i].release_work, smt_tog_release_work_handler);
         }
     }
     init_first_run = false;
@@ -146,8 +167,7 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
             continue;
         }
         LOG_DBG("smart toggle at pos %d interrupted by pos %d", smt_tog->position, ev->position);
-        smt_tog->is_active = false;
-        release_tog_behavior(smt_tog);
+        queue_smt_tog_release(smt_tog);
         return ZMK_EV_EVENT_BUBBLE;
     }
     return ZMK_EV_EVENT_BUBBLE;
@@ -164,8 +184,7 @@ static int smt_tog_layer_state_changed_listener(const zmk_event_t *eh) {
             continue;
         }
         LOG_DBG("smart toggle at pos %d ending, layer %d deactivated", smt_tog->position, ev->layer);
-        smt_tog->is_active = false;
-        release_tog_behavior(smt_tog);
+        queue_smt_tog_release(smt_tog);
         return ZMK_EV_EVENT_BUBBLE;
     }
     return ZMK_EV_EVENT_BUBBLE;
