@@ -161,6 +161,9 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
     if (ev == NULL) {
         return ZMK_EV_EVENT_BUBBLE;
     }
+    if (!ev->state) {
+        return ZMK_EV_EVENT_BUBBLE;
+    }
     for (int i = 0; i < ZMK_BHV_MAX_ACTIVE_SMT_TOGS; i++) {
         struct active_smt_tog *smt_tog = &active_smt_togs[i];
         if (!smt_tog->is_active || is_position_ignored(smt_tog, ev->position)) {
@@ -168,7 +171,7 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
         }
         LOG_DBG("smart toggle at pos %d interrupted by pos %d", smt_tog->position, ev->position);
         queue_smt_tog_release(smt_tog);
-        return ZMK_EV_EVENT_BUBBLE;
+        return ZMK_EV_EVENT_CAPTURED;
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
