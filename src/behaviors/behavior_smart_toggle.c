@@ -3,6 +3,7 @@
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 
 #include <drivers/behavior.h>
 #include <zmk/behavior.h>
@@ -19,9 +20,13 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 struct behavior_smt_tog_config {
     int32_t ignored_key_positions_len;
+    int32_t position_bindings_len;
+    int32_t position_binding_behaviors_len;
+    const uint8_t *ignored_key_positions;
+    const uint32_t *position_bindings;
+    const struct zmk_behavior_binding *position_binding_behaviors;
     struct zmk_behavior_binding tog_behavior;
     struct zmk_behavior_binding continue_behavior;
-    uint8_t ignored_key_positions[];
 };
 
 struct active_smt_tog {
@@ -35,6 +40,16 @@ struct active_smt_tog {
     bool release_pending;
     const struct behavior_smt_tog_config *config;
 };
+
+struct suppressed_smt_key {
+    bool active;
+    uint32_t position;
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+    uint8_t source;
+#endif
+};
+
+static struct suppressed_smt_key suppressed_smt_keys[ZMK_BHV_MAX_ACTIVE_SMT_TOGS] = {};
 
 void release_tog_behavior(struct active_smt_tog *st) {
     struct zmk_behavior_binding_event event = {
@@ -56,6 +71,75 @@ static struct active_smt_tog *find_smt_tog(uint32_t position) {
         if (active_smt_togs[i].position == position && active_smt_togs[i].is_active) {
             return &active_smt_togs[i];
         }
+    }
+    return NULL;
+}
+
+static struct suppressed_smt_key *
+find_suppressed_smt_key(uint32_t position
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+                        , uint8_t source
+#endif
+) {
+    for (int i = 0; i < ARRAY_SIZE(suppressed_smt_keys); i++) {
+        if (!suppressed_smt_keys[i].active) {
+            continue;
+        }
+        if (suppressed_smt_keys[i].position != position) {
+            continue;
+        }
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+        if (suppressed_smt_keys[i].source != source) {
+            continue;
+        }
+#endif
+        return &suppressed_smt_keys[i];
+    }
+    return NULL;
+}
+
+static void suppress_position_event(struct zmk_position_state_changed *ev) {
+    struct suppressed_smt_key *entry =
+        find_suppressed_smt_key(ev->position
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+                                , ev->source
+#endif
+        );
+    if (entry == NULL) {
+        for (int i = 0; i < ARRAY_SIZE(suppressed_smt_keys); i++) {
+            if (suppressed_smt_keys[i].active) {
+                continue;
+            }
+            entry = &suppressed_smt_keys[i];
+            break;
+        }
+    }
+    if (entry == NULL) {
+        LOG_WRN("Unable to suppress position %d, suppression list full", ev->position);
+        return;
+    }
+    entry->active = true;
+    entry->position = ev->position;
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+    entry->source = ev->source;
+#endif
+}
+
+static const struct zmk_behavior_binding *
+find_position_behavior(const struct behavior_smt_tog_config *config, uint32_t position) {
+    if (config->position_bindings_len == 0 || config->position_bindings == NULL ||
+        config->position_binding_behaviors == NULL) {
+        return NULL;
+    }
+    for (int i = 0; i < config->position_bindings_len; i++) {
+        if (config->position_bindings[i] != position) {
+            continue;
+        }
+        if (i >= config->position_binding_behaviors_len) {
+            LOG_WRN("position binding missing behavior at index %d for behavior %p", i, config);
+            return NULL;
+        }
+        return &config->position_binding_behaviors[i];
     }
     return NULL;
 }
@@ -97,8 +181,15 @@ static void queue_smt_tog_release(struct active_smt_tog *smt_tog) {
 }
 
 static bool is_position_ignored(struct active_smt_tog *smt_tog, int32_t position) {
+    if (find_position_behavior(smt_tog->config, position) != NULL) {
+        return true;
+    }
     if (smt_tog->position == position) {
         return true;
+    }
+    if (smt_tog->config->ignored_key_positions_len == 0 ||
+        smt_tog->config->ignored_key_positions == NULL) {
+        return false;
     }
     for (int i = 0; i < smt_tog->config->ignored_key_positions_len; i++) {
         if (smt_tog->config->ignored_key_positions[i] == position) {
@@ -161,15 +252,45 @@ static int smt_tog_position_state_changed_listener(const zmk_event_t *eh) {
     if (ev == NULL) {
         return ZMK_EV_EVENT_BUBBLE;
     }
-    if (!ev->state) {
-        return ZMK_EV_EVENT_BUBBLE;
+    struct suppressed_smt_key *suppressed =
+        find_suppressed_smt_key(ev->position
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+                                , ev->source
+#endif
+        );
+    if (suppressed != NULL) {
+        if (!ev->state) {
+            suppressed->active = false;
+        }
+        return ZMK_EV_EVENT_CAPTURED;
     }
     for (int i = 0; i < ZMK_BHV_MAX_ACTIVE_SMT_TOGS; i++) {
         struct active_smt_tog *smt_tog = &active_smt_togs[i];
-        if (!smt_tog->is_active || is_position_ignored(smt_tog, ev->position)) {
+        if (!smt_tog->is_active) {
+            continue;
+        }
+        const struct zmk_behavior_binding *position_binding =
+            find_position_behavior(smt_tog->config, ev->position);
+        if (position_binding != NULL) {
+            struct zmk_behavior_binding_event event = {
+                .layer = smt_tog->layer,
+                .position = ev->position,
+                .timestamp = ev->timestamp,
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+                .source = ev->source,
+#endif
+            };
+            zmk_behavior_invoke_binding(position_binding, event, ev->state);
+            return ZMK_EV_EVENT_CAPTURED;
+        }
+        if (is_position_ignored(smt_tog, ev->position)) {
+            continue;
+        }
+        if (!ev->state) {
             continue;
         }
         LOG_DBG("smart toggle at pos %d interrupted by pos %d", smt_tog->position, ev->position);
+        suppress_position_event(ev);
         queue_smt_tog_release(smt_tog);
         return ZMK_EV_EVENT_CAPTURED;
     }
@@ -215,10 +336,76 @@ static const struct behavior_driver_api behavior_smt_tog_driver_api = {
 #endif // IS_ENABLED(CONFIG_ZMK_BEHAVIOR_METADATA)
 };
 
+#define SMT_TOG_VALIDATE_POSITION_CONFIG(inst)                                                     \
+    COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_bindings),                                    \
+                (BUILD_ASSERT(DT_INST_NODE_HAS_PROP(inst, position_binding_behaviors),             \
+                              "position-binding-behaviors must be defined when position-bindings is used"); \
+                 BUILD_ASSERT(DT_INST_PROP_LEN(inst, position_bindings) ==                         \
+                              DT_INST_PROP_LEN(inst, position_binding_behaviors),                  \
+                              "position-binding-behaviors length must match position-bindings length");), \
+                ())
+
+#define SMT_TOG_BINDING_PARAM(inst, idx, cell)                                                     \
+    COND_CODE_1(DT_PHA_HAS_CELL(DT_DRV_INST(inst), position_binding_behaviors, cell),              \
+                (DT_PHA_BY_IDX(DT_DRV_INST(inst), position_binding_behaviors, idx, cell)), (0))
+
+#define SMT_TOG_POSITION_BEHAVIOR_ENTRY(idx, inst)                                                 \
+    {                                                                                              \
+        .behavior_dev = DEVICE_DT_GET(DT_INST_PHANDLE_BY_IDX(inst, position_binding_behaviors, idx)), \
+        .param1 = SMT_TOG_BINDING_PARAM(inst, idx, param1),                                        \
+        .param2 = SMT_TOG_BINDING_PARAM(inst, idx, param2),                                        \
+    }
+
+#define SMT_TOG_DEFINE_POSITION_BEHAVIORS(inst)                                                    \
+    COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_binding_behaviors),                           \
+                (static const struct zmk_behavior_binding                                         \
+                     behavior_smt_tog_position_behavior_bindings_##inst[] = {                      \
+                         LISTIFY(DT_INST_PROP_LEN(inst, position_binding_behaviors),               \
+                                 SMT_TOG_POSITION_BEHAVIOR_ENTRY, (,), inst)};),                   \
+                ())
+
+#define SMT_TOG_DEFINE_POSITION_BINDINGS(inst)                                                     \
+    COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_bindings),                                    \
+                (static const uint32_t behavior_smt_tog_positions_##inst[] =                       \
+                     DT_INST_PROP(inst, position_bindings);),                                      \
+                ())
+
+#define SMT_TOG_DEFINE_IGNORED_POSITIONS(inst)                                                     \
+    COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ignored_key_positions),                                \
+                (static const uint8_t behavior_smt_tog_ignored_positions_##inst[] =                \
+                     DT_INST_PROP(inst, ignored_key_positions);),                                  \
+                ())
+
+#define SMT_TOG_CONFIG_IGNORED_POSITIONS(inst)                                                     \
+    .ignored_key_positions =                                                                       \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ignored_key_positions),                            \
+                    (behavior_smt_tog_ignored_positions_##inst), (NULL)),                          \
+    .ignored_key_positions_len =                                                                   \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, ignored_key_positions),                            \
+                    (DT_INST_PROP_LEN(inst, ignored_key_positions)), (0))
+
+#define SMT_TOG_CONFIG_POSITION_DATA(inst)                                                         \
+    .position_bindings =                                                                           \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_bindings),                                \
+                    (behavior_smt_tog_positions_##inst), (NULL)),                                  \
+    .position_bindings_len =                                                                       \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_bindings),                                \
+                    (DT_INST_PROP_LEN(inst, position_bindings)), (0)),                              \
+    .position_binding_behaviors =                                                                  \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_binding_behaviors),                       \
+                    (behavior_smt_tog_position_behavior_bindings_##inst), (NULL)),                 \
+    .position_binding_behaviors_len =                                                              \
+        COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, position_binding_behaviors),                       \
+                    (DT_INST_PROP_LEN(inst, position_binding_behaviors)), (0))
+
 #define ST_INST(n)                                                                                 \
-    static struct behavior_smt_tog_config behavior_smt_tog_config_##n = {                          \
-        .ignored_key_positions = DT_INST_PROP(n, ignored_key_positions),                           \
-        .ignored_key_positions_len = DT_INST_PROP_LEN(n, ignored_key_positions),                   \
+    SMT_TOG_DEFINE_IGNORED_POSITIONS(n)                                                            \
+    SMT_TOG_VALIDATE_POSITION_CONFIG(n)                                                            \
+    SMT_TOG_DEFINE_POSITION_BEHAVIORS(n)                                                           \
+    SMT_TOG_DEFINE_POSITION_BINDINGS(n)                                                            \
+    static const struct behavior_smt_tog_config behavior_smt_tog_config_##n = {                    \
+        SMT_TOG_CONFIG_IGNORED_POSITIONS(n),                                                       \
+        SMT_TOG_CONFIG_POSITION_DATA(n),                                                           \
         .tog_behavior = ZMK_KEYMAP_EXTRACT_BINDING(0, DT_DRV_INST(n)),                             \
         .continue_behavior = ZMK_KEYMAP_EXTRACT_BINDING(1, DT_DRV_INST(n))};                       \
     BEHAVIOR_DT_INST_DEFINE(n, behavior_smt_tog_init, NULL, NULL, &behavior_smt_tog_config_##n,    \
