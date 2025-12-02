@@ -17,11 +17,9 @@ properties:
   ignored-key-positions:
     type: array
     required: false
-    default: []
   position-bindings:
     type: array
     required: false
-    default: []
     description: |
       List of key positions that should invoke the additional bindings defined in
       `position-binding-behaviors` while the toggle is active. The number of entries
@@ -29,7 +27,6 @@ properties:
   position-binding-behaviors:
     type: phandle-array
     required: false
-    default: []
     description: |
       Additional behavior bindings that may be triggered while the toggle is active.
       Each entry uses the same format as `bindings` and is paired with the corresponding
